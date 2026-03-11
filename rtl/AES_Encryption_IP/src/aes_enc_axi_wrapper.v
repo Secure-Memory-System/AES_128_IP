@@ -39,9 +39,9 @@ module aes_enc_axi_wrapper(
         if (!aresetn)
             bvalid_reg <= 0;
         else if (s_axi_awvalid && s_axi_wvalid && !bvalid_reg)
-            bvalid_reg <= 1;           // 쓰기 수신 완료 → response 준비
+            bvalid_reg <= 1;
         else if (s_axi_bready)
-            bvalid_reg <= 0;           // 마스터가 response 수신 확인
+            bvalid_reg <= 0;
     end
     assign s_axi_bvalid = bvalid_reg;
 
@@ -59,7 +59,6 @@ module aes_enc_axi_wrapper(
     end
 
     // [Part 2] AES-128 Core 연동 
-    
     wire [127:0] aes_output;
     wire         aes_done;
     
@@ -68,7 +67,7 @@ module aes_enc_axi_wrapper(
         .reset_n  (aresetn),
         .key      (aes_key),
         .data_in ({96'd0, s_axis_tdata}),
-        .start    (s_axis_tvalid && s_axis_tready), // 준비되었을 때만 시작
+        .start    (s_axis_tvalid && s_axis_tready),
         .data_out (aes_output),
         .done     (aes_done)
     );
@@ -79,13 +78,12 @@ module aes_enc_axi_wrapper(
     reg busy;
     always @(posedge aclk or negedge aresetn) begin
         if (!aresetn)          busy <= 0;
-        else if (start_pulse)  busy <= 1;  // 연산 시작
-        else if (aes_done)     busy <= 0;  // 연산 완료
+        else if (start_pulse)  busy <= 1;
+        else if (aes_done)     busy <= 0;
     end
     
     assign s_axis_tready = !busy && !output_valid;
     
-    // 암호화 완료 시 출력 유효
     reg [127:0] output_reg;
     reg         output_valid;
     
@@ -93,10 +91,10 @@ module aes_enc_axi_wrapper(
         if (!aresetn) begin
             output_valid <= 0;
         end else if (aes_done) begin
-            output_reg   <= aes_output;  // done 시점에 래치
+            output_reg   <= aes_output;
             output_valid <= 1;
         end else if (m_axis_tready && output_valid) begin
-            output_valid <= 0;           // 핸드셰이크 완료 후 해제
+            output_valid <= 0;
         end
     end
     

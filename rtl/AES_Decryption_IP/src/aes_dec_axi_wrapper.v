@@ -30,8 +30,8 @@ module aes_dec_axi_wrapper (
     // ==========================================
     // 3. AXI4-Stream Master (복구된 숫자 데이터 출력)
     // ==========================================
-    // FND 컨트롤러로 보낼 원래의 숫자 데이터 (패딩 제거 전 128비트 전체 전달)
-    output wire [127:0] m_axis_tdata, 
+    // FND 컨트롤러로 보낼 숫자 데이터
+    output wire [127:0]   m_axis_tdata, 
     output wire         m_axis_tvalid,
     input  wire         m_axis_tready
 );

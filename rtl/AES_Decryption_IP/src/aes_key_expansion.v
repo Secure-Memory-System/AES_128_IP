@@ -1,30 +1,16 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company: 
-// Engineer: 
-// 
-// Create Date: 2026/03/08 13:33:10
-// Design Name: 
-// Module Name: aes_key_expansion
-// Project Name: 
-// Target Devices: 
-// Tool Versions: 
-// Description: 
-// 
-// Dependencies: 
-// 
-// Revision:
-// Revision 0.01 - File Created
-// Additional Comments:
-// 
+// Module Name: aes_key_expansion (Decryption version - with load/ready signals)
 //////////////////////////////////////////////////////////////////////////////////
-
 
 module aes_key_expansion(
     input  wire         clk,
-    input  wire [127:0] initial_key, 
-    input  wire [3:0]   round,       
-    output reg  [127:0] expanded_key 
+    input  wire         reset_n,      // ★ 추가
+    input  wire         load,         // ★ 추가
+    input  wire [127:0] initial_key,
+    input  wire [3:0]   round,
+    output reg  [127:0] expanded_key,
+    output reg          ready         // ★ 추가
 );
 
     // --------------------------------------------------
@@ -41,7 +27,7 @@ module aes_key_expansion(
     endfunction
 
     // --------------------------------------------------
-    // 2. 키 확장 전용 S-Box 함수 선언 (에러 해결의 핵심!)
+    // 2. 키 확장 전용 S-Box 함수 선언
     // --------------------------------------------------
     function automatic[7:0] sbox_func;
         input [7:0] data_in;
@@ -117,7 +103,7 @@ module aes_key_expansion(
     endfunction
 
     // --------------------------------------------------
-    // 3. SubWord 함수 (이제 에러 안 남!)
+    // 3. SubWord 함수
     // --------------------------------------------------
     function automatic[31:0] sub_word;
         input [31:0] w;
@@ -133,18 +119,30 @@ module aes_key_expansion(
     // 4. 키 생성 로직 (Iterative 구조)
     // --------------------------------------------------
     reg [127:0] key_mem [0:10];
-    integer i;
+    reg [3:0]   calc_idx;
 
-    always @(*) begin
-        key_mem[0] = initial_key;
-        for (i = 1; i <= 10; i = i + 1) begin
-            key_mem[i][127:96] = key_mem[i-1][127:96] ^ 
-                                 sub_word({key_mem[i-1][23:0], key_mem[i-1][31:24]}) ^ 
-                                 {rcon_func(i[3:0]), 24'h0};
-            
-            key_mem[i][95:64] = key_mem[i-1][95:64] ^ key_mem[i][127:96];
-            key_mem[i][63:32] = key_mem[i-1][63:32] ^ key_mem[i][95:64];
-            key_mem[i][31:0]  = key_mem[i-1][31:0]  ^ key_mem[i][63:32];
+    wire [31:0] w0_next =
+        key_mem[calc_idx-1][127:96] ^
+        sub_word({key_mem[calc_idx-1][23:0],
+                  key_mem[calc_idx-1][31:24]}) ^
+        {rcon_func(calc_idx), 24'h0};
+    wire [31:0] w1_next = key_mem[calc_idx-1][95:64] ^ w0_next;
+    wire [31:0] w2_next = key_mem[calc_idx-1][63:32] ^ w1_next;
+    wire [31:0] w3_next = key_mem[calc_idx-1][31:0]  ^ w2_next;
+
+    always @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            ready    <= 1'b0;
+            calc_idx <= 4'd0;
+        end else if (load) begin
+            key_mem[0] <= initial_key;
+            calc_idx   <= 4'd1;
+            ready      <= 1'b0;
+        end else if (calc_idx >= 4'd1 && calc_idx <= 4'd10) begin
+            key_mem[calc_idx] <= {w0_next, w1_next, w2_next, w3_next};
+            calc_idx <= calc_idx + 1;
+            if (calc_idx == 4'd10)
+                ready <= 1'b1;
         end
     end
 

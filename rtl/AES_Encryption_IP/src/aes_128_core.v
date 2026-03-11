@@ -13,14 +13,17 @@ module aes_128_core (
     // --------------------------------------------------
     // [1] 상태 정의 및 레지스터
     // --------------------------------------------------
-    localparam IDLE     = 3'd0;
-    localparam ROUND_OP = 3'd1; // 라운드 1~9 (Sub/Shift/Mix/AddKey)
-    localparam FINAL_RD = 3'd2; // 라운드 10 (Sub/Shift/AddKey - Mix 제외)
-    localparam DONE     = 3'd3;
+    localparam IDLE      = 3'd0;
+    localparam ROUND_OP  = 3'd1;
+    localparam ROUND_MIX = 3'd2;
+    localparam FINAL_RD  = 3'd3;
+    localparam DONE      = 3'd4;
+    localparam WAIT_KEY  = 3'd5;
 
     reg [2:0] state;
     reg [3:0] round_count;
     reg [127:0] state_reg;
+    reg [127:0] pipe_reg;    // ★ 추가: 사이클 A 결과 임시 저장용
     wire [127:0] round_key;
 
     // --------------------------------------------------
@@ -29,10 +32,13 @@ module aes_128_core (
     
     // 키 확장 모듈: 라운드 카운트에 맞춰 키 공급
     aes_key_expansion u_key_ext (
-        .clk(clk),
+        .clk        (clk),
+        .reset_n    (reset_n),    // ★ 추가
+        .load       (start),      // ★ start 신호로 키 계산 시작
         .initial_key(key),
-        .round(round_count),
-        .expanded_key(round_key)
+        .round      (round_count),
+        .expanded_key(round_key),
+        .ready      (key_ready)   // ★ 추가
     );
 
     // S-Box 16개 병렬 배치 (SubBytes 단계)
@@ -40,7 +46,7 @@ module aes_128_core (
     wire [127:0] sbox_in;
     wire [127:0] sbox_out;
 
-    genvar i;
+    genvar i; // elaborate design에서 사용되나 simulation time에선 사라짐
     generate
         for (i = 0; i < 16; i = i + 1) begin : sbox_gen
             sbox u_sbox_inst (
@@ -107,22 +113,35 @@ module aes_128_core (
                 IDLE: begin
                     done <= 1'b0;
                     if (start) begin
-                        // 라운드 0: AddRoundKey 전용
-                        state_reg <= data_in ^ key; 
+                        state_reg   <= data_in ^ key;
                         round_count <= 4'd1;
-                        state <= ROUND_OP;
+                        state       <= WAIT_KEY;  // ★ 키 준비 대기 상태로 먼저 이동
                     end
                 end
+                
+                WAIT_KEY: begin  // ★ 새 상태 추가 (key_ready 올 때까지 대기)
+                    if (key_ready)
+                        state <= ROUND_OP;
+                end 
 
                 ROUND_OP: begin
-                    // SubBytes(sbox_out) -> ShiftRows -> MixColumns -> AddRoundKey
-                    state_reg <= func_mix_columns(func_shift_rows(sbox_out)) ^ round_key;
-                    
+                    // 사이클 A: SubBytes + ShiftRows + AddRoundKey만
+                    // 논리 깊이 ~7레벨 (기존 ~49레벨에서 대폭 감소)
+                    pipe_reg <= func_shift_rows(sbox_out) ^ round_key;
+                    state    <= ROUND_MIX;  // 다음 사이클로 넘김
+                end
+                
+                ROUND_MIX: begin
+                    // 사이클 B: MixColumns만
+                    // 논리 깊이 ~12레벨
+                    state_reg <= func_mix_columns(pipe_reg);
+                
                     if (round_count == 4'd9) begin
                         round_count <= 4'd10;
                         state <= FINAL_RD;
                     end else begin
                         round_count <= round_count + 1;
+                        state <= ROUND_OP;  // 다시 사이클 A로 복귀
                     end
                 end
 
@@ -148,7 +167,7 @@ module sbox (
     output reg  [7:0] data_out
 );
     always @(*) begin
-        case (data_in)
+        case (data_in) // AES 표준(FIPS 197)
             8'h00: data_out = 8'h63; 8'h01: data_out = 8'h7c; 8'h02: data_out = 8'h77; 8'h03: data_out = 8'h7b;
             8'h04: data_out = 8'hf2; 8'h05: data_out = 8'h6b; 8'h06: data_out = 8'h6f; 8'h07: data_out = 8'hc5;
             8'h08: data_out = 8'h30; 8'h09: data_out = 8'h01; 8'h0a: data_out = 8'h67; 8'h0b: data_out = 8'h2b;

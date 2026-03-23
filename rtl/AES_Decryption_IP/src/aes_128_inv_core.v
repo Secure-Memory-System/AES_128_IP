@@ -13,16 +13,20 @@ module aes_128_inv_core (
     // --------------------------------------------------
     // [1] 상태 정의 및 레지스터
     // --------------------------------------------------
-    localparam IDLE     = 3'd0;
-    localparam INITIAL  = 3'd1; // Round 0 (AddRoundKey)
-    localparam ROUND_OP = 3'd2; // Round 1~9 (InvShift -> InvSub -> AddKey -> InvMix)
-    localparam FINAL_RD = 3'd3; // Round 10 (InvShift -> InvSub -> AddKey)
-    localparam DONE     = 3'd4;
+    localparam IDLE      = 3'd0;
+    localparam INITIAL   = 3'd1;
+    localparam WAIT_KEY  = 3'd2;  // ★ 추가: 키 준비 대기
+    localparam ROUND_OP  = 3'd3;
+    localparam ROUND_MIX = 3'd4;  // ★ 추가: InvMixColumns 전용
+    localparam FINAL_RD  = 3'd5;
+    localparam DONE      = 3'd6;
 
-    reg [2:0] state;
-    reg [3:0] round_count; // 복호화는 10부터 0으로 줄어듭니다.
+    reg [2:0]   state;
+    reg [3:0]   round_count;
     reg [127:0] state_reg;
+    reg [127:0] pipe_reg;    // ★ 추가
     wire [127:0] round_key;
+    wire         key_ready;  // ★ 추가
 
     // --------------------------------------------------
     // [2] 외부 모듈 인스턴스화
@@ -30,10 +34,13 @@ module aes_128_inv_core (
     
     // 키 확장 모듈 (기존 모듈 재사용)
     aes_key_expansion u_key_ext (
-        .clk(clk),
+        .clk        (clk),
+        .reset_n    (reset_n),   // ★ 추가
+        .load       (start),     // ★ 추가
         .initial_key(key),
-        .round(round_count),
-        .expanded_key(round_key)
+        .round      (round_count),
+        .expanded_key(round_key),
+        .ready      (key_ready)  // ★ 추가
     );
 
     // Inverse S-Box 16개 병렬 배치 (Inverse SubBytes 단계)
@@ -107,47 +114,56 @@ module aes_128_inv_core (
     // [4] 메인 상태 머신 (FSM) - 역순 진행
     // --------------------------------------------------
     
+    reg [127:0] data_in_latched; // ★ [추가] 도망가는 데이터를 붙잡아둘 래치 메모리
+
     always @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             state <= IDLE;
             done <= 1'b0;
             round_count <= 4'd10;
+            data_in_latched <= 128'd0; 
         end else begin
             case (state)
                 IDLE: begin
                     done <= 1'b0;
                     if (start) begin
+                        // ★ [핵심 해결] 1클럭만 존재하는 AXI 스트림 데이터를 안전하게 캡처!
+                        data_in_latched <= data_in; 
                         round_count <= 4'd10;
-                        state <= INITIAL;
+                        state <= WAIT_KEY; 
                     end
                 end
 
-                INITIAL: begin
-                    // 시작하자마자 10번 라운드 키와 XOR (AddRoundKey)
-                    state_reg <= data_in ^ round_key;
-                    round_count <= 4'd9;
-                    state <= ROUND_OP;
+                WAIT_KEY: begin
+                    if (key_ready)
+                        state <= INITIAL;
                 end
-
+                
+                INITIAL: begin
+                    // ★ 도망가버린 원본 data_in 대신, 안전하게 저장된 data_in_latched 사용!
+                    state_reg   <= data_in_latched ^ round_key; 
+                    round_count <= 4'd9;
+                    state       <= ROUND_OP;
+                end
+                
                 ROUND_OP: begin
-                    // 복호화 순서: InvShift -> InvSub -> AddKey -> InvMix
-                    // 단, AddRoundKey 이후에 InvMixColumns를 적용하는 것이 표준 구조
-                    state_reg <= func_inv_mix_columns(inv_sbox_out ^ round_key); // 함수 내에서 func_inv_shift_rows 결과물(inv_sbox_out) 사용
-                    // 주의: 실제 구현 시에는 ShiftRows를 먼저 거친 데이터를 S-Box에 넣어야 함
-                    // 여기서는 배선 최적화를 위해 상태 전이 시 조합하여 사용
-                    
+                    pipe_reg <= inv_sbox_out ^ round_key;
+                    state    <= ROUND_MIX;
+                end
+                
+                ROUND_MIX: begin
+                    state_reg <= func_inv_mix_columns(pipe_reg);
                     if (round_count == 4'd1) begin
                         round_count <= 4'd0;
                         state <= FINAL_RD;
                     end else begin
                         round_count <= round_count - 1;
+                        state <= ROUND_OP;
                     end
                 end
                 
-                // (설계 편의를 위해 ROUND_OP 내 로직 상세 조정 필요할 수 있음)
                 FINAL_RD: begin
-                    // 마지막(0번) 라운드: InvMix 생략
-                    state_reg <= inv_sbox_out ^ round_key; 
+                    state_reg <= inv_sbox_out ^ round_key;
                     state <= DONE;
                 end
 

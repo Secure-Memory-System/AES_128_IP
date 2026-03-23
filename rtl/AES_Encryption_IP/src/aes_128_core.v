@@ -125,23 +125,21 @@ module aes_128_core (
                 end 
 
                 ROUND_OP: begin
-                    // 사이클 A: SubBytes + ShiftRows + AddRoundKey만
-                    // 논리 깊이 ~7레벨 (기존 ~49레벨에서 대폭 감소)
-                    pipe_reg <= func_shift_rows(sbox_out) ^ round_key;
-                    state    <= ROUND_MIX;  // 다음 사이클로 넘김
+                    // 사이클 A: SubBytes + ShiftRows만 (MixColumns는 아직!)
+                    pipe_reg <= func_shift_rows(sbox_out);
+                    state    <= ROUND_MIX;
                 end
                 
                 ROUND_MIX: begin
-                    // 사이클 B: MixColumns만
-                    // 논리 깊이 ~12레벨
-                    state_reg <= func_mix_columns(pipe_reg);
+                    // 사이클 B: MixColumns + AddRoundKey (표준 순서!)
+                    state_reg <= func_mix_columns(pipe_reg) ^ round_key;
                 
                     if (round_count == 4'd9) begin
                         round_count <= 4'd10;
                         state <= FINAL_RD;
                     end else begin
                         round_count <= round_count + 1;
-                        state <= ROUND_OP;  // 다시 사이클 A로 복귀
+                        state <= ROUND_OP;
                     end
                 end
 
